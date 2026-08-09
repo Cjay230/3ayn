@@ -160,33 +160,6 @@
   .screen.active{display:block}
   .settingRow{display:flex;justify-content:space-between;align-items:center;padding:6px 0}
   .settingRow label{font-weight:700;font-size:14.5px}
-  /* voice agent floating button */
-  .agentFab{
-    position:fixed;right:18px;bottom:22px;z-index:60;
-    width:72px;height:72px;border-radius:50%;border:none;cursor:pointer;
-    background:var(--accent);color:#fff;font-family:'Cairo',sans-serif;font-weight:900;font-size:15px;
-    box-shadow:0 8px 28px rgba(90,84,212,.45);
-    display:flex;align-items:center;justify-content:center;text-align:center;line-height:1.1;
-  }
-  .agentFab:focus-visible{outline:3px solid #fff;outline-offset:3px}
-  .agentFab.listening{background:#E5484D;animation:fabPulse 1.3s infinite}
-  .agentFab.thinking{background:var(--amber)}
-  @keyframes fabPulse{0%{box-shadow:0 0 0 0 rgba(229,72,77,.6)}70%{box-shadow:0 0 0 22px rgba(229,72,77,0)}100%{box-shadow:0 0 0 0 rgba(229,72,77,0)}}
-  @media (prefers-reduced-motion: reduce){.agentFab.listening{animation:none}}
-  .agentBubble{
-    position:fixed;right:18px;bottom:104px;z-index:60;max-width:300px;
-    background:var(--card);color:var(--ink);border-radius:16px;padding:12px 14px;
-    box-shadow:0 8px 28px rgba(40,32,90,.22);font-size:14px;line-height:1.6;
-    direction:rtl;text-align:right;display:none;
-  }
-  .agentBubble.show{display:block}
-  .agentBubble .u{color:var(--dim);font-size:12px;margin-bottom:4px}
-  #dangerFlash{
-    position:fixed;inset:0;z-index:90;background:rgba(229,72,77,.0);
-    pointer-events:none;transition:background .1s;
-  }
-  #dangerFlash.on{background:rgba(229,72,77,.55);animation:dangerBlink .5s steps(2) infinite}
-  @keyframes dangerBlink{0%{opacity:1}100%{opacity:.4}}
   .tag{font-size:11px;font-weight:800;background:var(--accent-soft);color:var(--accent);border-radius:999px;padding:2px 10px;margin-inline-start:8px;vertical-align:middle}
   .tag.on{background:var(--green);color:#fff}
   .toggle{width:48px;height:28px;border-radius:999px;background:#D6D2EA;border:none;cursor:pointer;position:relative}
@@ -293,7 +266,7 @@
 
     <div class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
     <div class="listenTxt" id="listenTxt">Not listening yet</div>
-    <div class="listenTxt" style="font-size:10px;opacity:.6">build v-AGENT1</div>
+    <div class="listenTxt" style="font-size:10px;opacity:.6">build v-MIC2</div>
   </div>
 
   <!-- ================= ASK ================= -->
@@ -413,209 +386,7 @@
 </div>
 
 <script type="module">
-console.log("3ayn build v-AGENT1");
-
-/* ==================================================================
-   VOICE AGENT  (build v-AGENT1)
-   - one audio controller (no overlaps)
-   - on-device wall/obstacle alarm (instant, top priority)
-   - "Ya 3ayn" wake + tap -> Bedrock conversational brain (/assist)
-   ================================================================== */
-
-/* ---- unified audio priorities (higher wins, cancels lower) ---- */
-const PRIO = { NARRATION: 1, ASSISTANT: 5, DANGER: 9 };
-
-/* ---- DANGER: on-device obstacle alarm ------------------------------
-   Watches the camera for a large, brightening, low-detail region that
-   grows across frames = a surface (wall/column/obstacle) coming close.
-   Pure heuristic, instant, no cloud. Threshold tunable for the room. */
-const DANGER = {
-  fillThreshold: 0.62,   // fraction of frame that must be one flat close mass
-  growWindowMs: 900,
-  cooldownMs: 4000,
-};
-let dangerHist = [], dangerLast = 0, dangerActive = false;
-let dangerCanvas = null;
-
-function checkDanger(){
-  if (!running || !video.videoWidth) return;
-  if (!dangerCanvas){ dangerCanvas = document.createElement('canvas'); dangerCanvas.width = 64; dangerCanvas.height = 48; }
-  const dctx = dangerCanvas.getContext('2d', { willReadFrequently: true });
-  dctx.drawImage(video, 0, 0, 64, 48);
-  const d = dctx.getImageData(0, 0, 64, 48).data;
-  // mean brightness + low local variance over center region = big flat surface up close
-  let sum = 0, n = 64*48;
-  const lum = new Float32Array(n);
-  for (let i = 0; i < n; i++){
-    const L = 0.299*d[i*4] + 0.587*d[i*4+1] + 0.114*d[i*4+2];
-    lum[i] = L; sum += L;
-  }
-  const mean = sum / n;
-  let varSum = 0;
-  for (let i = 0; i < n; i++){ const dd = lum[i]-mean; varSum += dd*dd; }
-  const variance = varSum / n;
-  // "close flat surface" score: bright-ish, low texture. Normalize roughly 0..1.
-  const flatness = Math.max(0, 1 - variance / 2200);      // low variance -> ~1
-  const fill = flatness;                                   // proxy for how much of view is one mass
-  const now = performance.now();
-  dangerHist.push({ t: now, fill });
-  dangerHist = dangerHist.filter(x => now - x.t <= DANGER.growWindowMs + 200);
-  const old = dangerHist.find(x => now - x.t >= DANGER.growWindowMs * 0.8);
-  const growing = old ? (fill - old.fill) > 0.06 : false;
-
-  document.getElementById('dFill') && (document.getElementById('dFill').textContent = fill.toFixed(2));
-
-  if (fill >= DANGER.fillThreshold && growing && now - dangerLast > DANGER.cooldownMs){
-    dangerLast = now;
-    triggerDanger();
-  }
-}
-
-function triggerDanger(){
-  const flash = document.getElementById('dangerFlash');
-  flash.classList.add('on');
-  setTimeout(() => flash.classList.remove('on'), 2500);
-  // top-priority spoken alarm + tone; interrupts everything
-  playAlarmTone();
-  speakAgent(lang === 'ar' ? '\u0627\u0646\u062a\u0628\u0647! \u0639\u0627\u0626\u0642 \u0623\u0645\u0627\u0645\u0643 \u0645\u0628\u0627\u0634\u0631\u0629' : 'Careful! Obstacle right ahead', PRIO.DANGER);
-}
-
-let audioCtx = null;
-function playAlarmTone(){
-  try{
-    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-    o.type = 'square'; o.frequency.value = 880;
-    g.gain.value = 0.14; o.connect(g); g.connect(audioCtx.destination);
-    o.start();
-    o.frequency.setValueAtTime(880, audioCtx.currentTime);
-    o.frequency.setValueAtTime(660, audioCtx.currentTime + 0.15);
-    o.frequency.setValueAtTime(880, audioCtx.currentTime + 0.30);
-    o.stop(audioCtx.currentTime + 0.45);
-  }catch(e){}
-}
-
-/* ---- ASSISTANT speech: routes through the existing gate at high prio ---- */
-function speakAgent(text, prio){
-  // reuse the app's speech path but force priority; stopAllAudio clears lower lanes
-  if (prio >= PRIO.ASSISTANT) stopAllAudio();
-  speakLocal(text, lang, prio);
-}
-
-/* ---- the "Ya 3ayn" wake recognizer + brain call ---- */
-let agentRec = null, agentListening = false, agentBusy = false;
-
-function setFab(state){
-  const fab = $("agentFab");
-  fab.classList.toggle("listening", state === "listening");
-  fab.classList.toggle("thinking", state === "thinking");
-}
-
-function showBubble(userText, reply){
-  const b = $("agentBubble");
-  b.innerHTML = (userText ? '<div class="u">\u0623\u0646\u062a: ' + userText + '</div>' : '') + (reply || '');
-  b.classList.add("show");
-  clearTimeout(b._t); b._t = setTimeout(() => b.classList.remove("show"), 9000);
-}
-
-async function askAssistant(userText){
-  if (agentBusy) return;
-  agentBusy = true; setFab("thinking");
-  stopAllAudio();
-  showBubble(userText, lang === 'ar' ? '\u0623\u0641\u0643\u0631\u2026' : 'Thinking\u2026');
-  const base = $("endpoint").value.trim() || DEFAULT_ENDPOINT;
-  const image = running ? captureBase64() : null;
-  try{
-    const r = await fetch(base + "/assist", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: userText, image, lang })
-    });
-    const dd = await r.json();
-    if (!r.ok) throw new Error(dd.message || "assist failed");
-    showBubble(userText, dd.text);
-    speakAgent(dd.text, PRIO.ASSISTANT);
-    if (dd.action) runAction(dd.action);
-  }catch(err){
-    const m = lang === 'ar' ? '\u0639\u0630\u0631\u0627\u064b\u060c \u0644\u0645 \u0623\u0633\u062a\u0637\u0639 \u0627\u0644\u0625\u062c\u0627\u0628\u0629' : "Sorry, I couldn't answer";
-    showBubble(userText, m); speakAgent(m, PRIO.ASSISTANT);
-  }finally{
-    agentBusy = false; setFab(agentListening ? "listening" : "");
-  }
-}
-
-/* ---- action layer: the brain's tags -> real app functions ---- */
-function runAction(action){
-  const t = action.type, arg = action.arg;
-  switch(t){
-    case "read":     show("read"); setTimeout(() => $("readBtn")?.click(), 500); break;
-    case "identify": show("ask");  setTimeout(() => $("whoBtn")?.click(), 500); break;
-    case "find":
-      show("find");
-      // best-effort: if a chip matches arg, click it, then find
-      setTimeout(() => $("findBtn")?.click(), 500);
-      break;
-    case "enroll":
-      show("settings");
-      if (arg) $("enName") && ($("enName").value = arg);
-      setTimeout(() => { $("enCapBtn")?.click(); }, 500);
-      break;
-    case "monitor":
-      show("settings");
-      if (!(window.watchActive)) $("watchTgl")?.click();
-      break;
-    // ADD NEW ACTIONS HERE  (e.g. case "navigate": ... when Location Service lands)
-    default: break;
-  }
-}
-
-/* ---- wake word + tap ---- */
-function startAgentListening(){
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR){ speakAgent(lang==='ar'?'\u0627\u0644\u0645\u062a\u0635\u0641\u062d \u0644\u0627 \u064a\u062f\u0639\u0645 \u0627\u0644\u0635\u0648\u062a':'Browser has no speech support', PRIO.ASSISTANT); return; }
-  if (agentRec){ try{ agentRec.stop(); }catch(e){} }
-  agentRec = new SR();
-  agentRec.lang = lang === 'ar' ? 'ar-SA' : 'en-US';
-  agentRec.continuous = true; agentRec.interimResults = false;
-  let armed = false;   // becomes true after hearing the wake word, next utterance is the question
-  agentRec.onresult = (e) => {
-    if (window.__appSpeaking) return;
-    const tr = e.results[e.results.length-1][0].transcript.trim();
-    const low = tr.toLowerCase();
-    const wake = low.includes('\u064a\u0627 \u0639\u064a\u0646') || low.includes('ya 3ayn') || low.includes('ya ain') || low.includes('hey ain');
-    if (wake){
-      // strip the wake word; if a question followed in the same phrase, use it
-      let after = tr.replace(/\u064a\u0627\s*\u0639\u064a\u0646/gi,'').replace(/ya\s*(3ayn|ain)/gi,'').replace(/hey\s*ain/gi,'').trim();
-      if (after.split(/\s+/).length >= 2){ askAssistant(after); }
-      else { armed = true; speakAgent(lang==='ar'?'\u0646\u0639\u0645\u061f':'Yes?', PRIO.ASSISTANT); }
-    } else if (armed){
-      armed = false; askAssistant(tr);
-    }
-  };
-  agentRec.onend = () => { if (agentListening) { try{ agentRec.start(); }catch(e){} } };
-  try{ agentRec.start(); agentListening = true; setFab("listening"); }catch(e){}
-}
-function stopAgentListening(){ agentListening = false; try{ agentRec?.stop(); }catch(e){} setFab(""); }
-
-$("agentFab").addEventListener("click", async () => {
-  if (agentListening){
-    // tapping while listening = immediate "speak now" (also covers no-wake-word use)
-    speakAgent(lang==='ar'?'\u0646\u0639\u0645\u061f':'Yes?', PRIO.ASSISTANT);
-    return;
-  }
-  // first tap: request mic once (held), start wake listening
-  try{
-    if (!window.__micStream){
-      window.__micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    }
-    startAgentListening();
-    speakAgent(lang==='ar'?'\u0623\u0646\u0627 \u0623\u0633\u0645\u0639\u0643\u060c \u0642\u0644 \u064a\u0627 \u0639\u064a\u0646 \u062b\u0645 \u0627\u0633\u0623\u0644\u0646\u064a':'I\u2019m listening. Say Ya 3ayn, then ask me anything.', PRIO.ASSISTANT);
-  }catch(e){
-    speakAgent(lang==='ar'?'\u0623\u062d\u062a\u0627\u062c \u0625\u0630\u0646 \u0627\u0644\u0645\u064a\u0643\u0631\u0648\u0641\u0648\u0646':'I need microphone permission', PRIO.ASSISTANT);
-  }
-});
-
-console.log("3ayn voice agent v-AGENT1 ready");
-
+console.log("3ayn build v-MIC2");
 import { FilesetResolver, PoseLandmarker } from
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
@@ -866,7 +637,7 @@ function loop(){
   if (video.currentTime !== lastVideoTime){
     lastVideoTime = video.currentTime;
     const result = landmarker.detectForVideo(video, performance.now());
-    draw(result); analyse(result); checkDanger();
+    draw(result); analyse(result);
     frames++;
     const now = performance.now();
     if (now - fpsT >= 1000){ $("dFps").textContent = frames + " fps"; frames = 0; fpsT = now; }
@@ -1351,8 +1122,5 @@ $("voiceTgl").addEventListener("click", async () => {
   updateVoiceUI();
 });
 </script>
-<button class="agentFab" id="agentFab" aria-label="Voice assistant, tap or say Ya 3ayn">يا عين</button>
-<div class="agentBubble" id="agentBubble" role="status" aria-live="polite"></div>
-<div id="dangerFlash"></div>
 </body>
 </html>

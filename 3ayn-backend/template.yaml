@@ -37,8 +37,7 @@ Resources:
       KeySchema:
         - AttributeName: faceId
           KeyType: HASH
-
-  AskFunction:
+  AssistFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: com.threeayn.handlers.AskHandler::handleRequest
@@ -51,6 +50,19 @@ Resources:
         Ask:
           Type: Api
           Properties: {RestApiId: !Ref ThreeAynApi, Path: /ask, Method: post}
+  AskFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: com.threeayn.handlers.AssistHandler::handleRequest
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: ['bedrock:InvokeModel', 'bedrock:Converse']
+              Resource: '*'
+      Events:
+        Ask:
+          Type: Api
+          Properties: {RestApiId: !Ref ThreeAynApi, Path: /assist, Method: post}
 
   ReadFunction:
     Type: AWS::Serverless::Function
