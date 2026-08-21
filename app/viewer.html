@@ -472,6 +472,42 @@ let lastUpdate = 0;
 let frameCount = 0;
 let pollInterval = 1000;
 let pollTimer = null;
+let accessRequestSent = false;
+
+async function requestGuardianAccess(){
+  if (accessRequestSent || !watchId || !api) return;
+
+  accessRequestSent = true;
+
+  const statusEl = document.getElementById("sessionStatus");
+  if (statusEl) statusEl.textContent = "Waiting for wearer approval";
+
+  try{
+    const r = await fetch(api + "/watch/request", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ watchId })
+    });
+
+    const d = await r.json();
+
+    if (!r.ok){
+      throw new Error(d.message || "Access request failed");
+    }
+
+    if (statusEl) {
+      statusEl.textContent = "Waiting for wearer approval";
+    }
+  }catch(err){
+    accessRequestSent = false;
+
+    if (statusEl) {
+      statusEl.textContent = "Could not request access";
+    }
+
+    console.error("Guardian access request failed:", err);
+  }
+}
 let errorCount = 0;
 let isActive = true;
 
@@ -541,6 +577,27 @@ if (!watchId || !api){
       }
       
       const d = await r.json();
+const consentStatus = d.consentStatus || "idle";
+const statusEl = document.getElementById("sessionStatus");
+
+if (consentStatus === "idle" || consentStatus === "pending"){
+  if (statusEl) statusEl.textContent = "Waiting for wearer approval";
+  statusText.textContent = "Waiting for the wearer to Allow or Deny access.";
+  dot.className = "dot";
+  return;
+}
+
+if (consentStatus === "denied"){
+  if (statusEl) statusEl.textContent = "Access denied";
+  statusText.textContent = "The wearer denied camera and location access.";
+  dot.className = "dot off";
+  if (img) img.removeAttribute("src");
+  return;
+}
+
+if (consentStatus === "approved"){
+  if (statusEl) statusEl.textContent = "Active";
+}
       
       if (!d.active){
         statusText.textContent = "Sharing has been turned off.";
@@ -583,6 +640,7 @@ if (!watchId || !api){
   
   // Initial poll + set interval
   poll();
+requestGuardianAccess();
   pollTimer = setInterval(poll, pollInterval);
   
   // Update time display every second

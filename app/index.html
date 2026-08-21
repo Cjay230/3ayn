@@ -913,6 +913,10 @@ $("enSendBtn").addEventListener("click", async () => {
 /* ---------------- Trusted Viewer (consent-gated snapshot sharing) ---------------- */
 let watchId = storeGet("threeayn_watchId") || null;
 let watchActive = storeGet("threeayn_watchActive") === "1";
+let consentToken = storeGet("threeayn_consentToken") || null;
+let consentStatus = "idle";
+let consentPollTimer = null;
+let lastConsentRequestAt = "";
 let watchTimer = null;
 
 function updateWatchUI(){
@@ -940,13 +944,200 @@ function captureWatchFrame(){
   c.getContext("2d").drawImage(video, 0, 0, c.width, c.height);
   return c.toDataURL("image/jpeg", 0.5).split(",")[1];
 }
+function ensureGuardianConsentPrompt(){
+  if ($("guardianConsentPrompt")) return;
 
+  const style = document.createElement("style");
+  style.textContent = `
+    #guardianConsentPrompt{
+      position:fixed;
+      inset:0;
+      z-index:99999;
+      display:none;
+      flex-direction:column;
+      justify-content:center;
+      padding:32px;
+      background:#0a2f6b;
+      color:white;
+      text-align:center;
+    }
+    #guardianConsentPrompt.show{display:flex}
+    #guardianConsentPrompt h2{
+      font-size:34px;
+      line-height:1.2;
+      margin:0 0 18px;
+    }
+    #guardianConsentPrompt p{
+      font-size:22px;
+      line-height:1.45;
+      margin:0 0 28px;
+    }
+    .guardian-consent-btn{
+      width:100%;
+      min-height:110px;
+      margin:10px 0;
+      border-radius:24px;
+      font-size:30px;
+      font-weight:800;
+      border:3px solid white;
+    }
+    #guardianAllowBtn{
+      background:#34c759;
+      color:#071a0c;
+      border-color:#34c759;
+    }
+    #guardianDenyBtn{
+      background:white;
+      color:#b42318;
+      border-color:#b42318;
+    }
+  `;
+  document.head.appendChild(style);
+
+  document.body.insertAdjacentHTML("beforeend", `
+    <div id="guardianConsentPrompt"
+         role="dialog"
+         aria-modal="true"
+         aria-labelledby="guardianConsentTitle"
+         aria-describedby="guardianConsentText">
+
+      <h2 id="guardianConsentTitle">
+        Guardian access request
+      </h2>
+
+      <p id="guardianConsentText">
+        Your trusted guardian wants to view your camera and location.
+      </p>
+
+      <button id="guardianAllowBtn"
+              class="guardian-consent-btn"
+              type="button">
+        ALLOW · اسمح
+      </button>
+
+      <button id="guardianDenyBtn"
+              class="guardian-consent-btn"
+              type="button">
+        DENY · ارفض
+      </button>
+    </div>
+  `);
+
+  $("guardianAllowBtn").addEventListener("click", () => respondToGuardianConsent("allow"));
+  $("guardianDenyBtn").addEventListener("click", () => respondToGuardianConsent("deny"));
+}
+
+function showGuardianConsentPrompt(requestedAt){
+  ensureGuardianConsentPrompt();
+
+  if (requestedAt && requestedAt === lastConsentRequestAt) return;
+  lastConsentRequestAt = requestedAt || String(Date.now());
+
+  $("guardianConsentPrompt").classList.add("show");
+  $("guardianAllowBtn").focus();
+
+  const msg = lang === "ar"
+    ? "ولي أمرك الموثوق يريد الوصول إلى الكاميرا والموقع. قل اسمح أو ارفض."
+    : "Your trusted guardian wants to view your camera and location. Choose Allow or Deny.";
+
+  speakLocal(msg, lang, 3);
+}
+
+function hideGuardianConsentPrompt(){
+  const box = $("guardianConsentPrompt");
+  if (box) box.classList.remove("show");
+}
+
+async function respondToGuardianConsent(decision){
+  if (!watchId || !consentToken) return;
+
+  const base = $("endpoint").value.trim();
+  if (!base) return;
+
+  try{
+    const r = await fetch(base + "/watch/consent", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        watchId,
+        consentToken,
+        decision
+      })
+    });
+
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.message || "Consent update failed");
+
+    consentStatus = d.consentStatus || decision;
+    hideGuardianConsentPrompt();
+
+    if (consentStatus === "approved"){
+      speakLocal(
+        lang === "ar"
+          ? "بدأت مشاركة الكاميرا والموقع."
+          : "Camera and location sharing started.",
+        lang,
+        3
+      );
+      startFrameLoop();
+    } else {
+      speakLocal(
+        lang === "ar"
+          ? "تم رفض الطلب. لا تتم مشاركة أي شيء."
+          : "Request denied. Nothing is being shared.",
+        lang,
+        3
+      );
+    }
+  }catch(err){
+    speakLocal(
+      lang === "ar"
+        ? "تعذر إرسال قرارك."
+        : "I could not send your decision. Please try again.",
+      lang,
+      3
+    );
+  }
+}
+
+function startConsentPoll(){
+  if (consentPollTimer) return;
+
+  consentPollTimer = setInterval(async () => {
+    if (!watchActive || !watchId) return;
+
+    const base = $("endpoint").value.trim();
+    if (!base) return;
+
+    try{
+      const r = await fetch(base + "/watch/" + encodeURIComponent(watchId));
+      if (!r.ok) return;
+
+      const d = await r.json();
+      const nextStatus = d.consentStatus || "idle";
+
+      if (nextStatus === "pending"){
+        showGuardianConsentPrompt(d.requestedAt || "");
+      }
+
+      if (nextStatus !== consentStatus){
+        consentStatus = nextStatus;
+
+        if (consentStatus === "stopped"){
+          hideGuardianConsentPrompt();
+        }
+      }
+    }catch(e){
+      // Ignore one failed poll and try again next time.
+    }
+  }, 1500);
+}
 function startFrameLoop(){
   if (watchTimer) return;
   let inFlight = false;
   watchTimer = setInterval(async () => {
     if (inFlight) return;
-    if (!watchActive || !watchId || !running) return;
+    if (!watchActive || !watchId || !running || consentStatus !== "approved") return;
     const base = $("endpoint").value.trim();
     if (!base) return;
     const img = captureWatchFrame();
@@ -962,7 +1153,10 @@ function startFrameLoop(){
   }, WATCH_INTERVAL_MS);
 }
 function stopFrameLoop(){ if (watchTimer){ clearInterval(watchTimer); watchTimer = null; } }
-if (watchActive) startFrameLoop();
+if (watchActive){
+  startConsentPoll();
+  startFrameLoop();
+}
 
 $("watchTgl").addEventListener("click", async () => {
   const base = $("endpoint").value.trim();
@@ -976,9 +1170,14 @@ $("watchTgl").addEventListener("click", async () => {
       });
       const d = await r.json();
       if (!r.ok || !d.watchId) throw new Error(d.message || "Failed to start");
-      watchId = d.watchId; watchActive = true;
-      storeSet("threeayn_watchId", watchId); storeSet("threeayn_watchActive", "1");
-      updateWatchUI(); startFrameLoop();
+      watchId = d.watchId;
+consentToken = d.consentToken || null;
+consentStatus = "idle";
+watchActive = true;
+      storeSet("threeayn_watchId", watchId); storeSet("threeayn_consentToken", consentToken || ""); storeSet("threeayn_watchActive", "1");
+      updateWatchUI();
+startConsentPoll();
+startFrameLoop();
     }catch(err){ alert("Failed: " + err.message); }
   } else {
     try{
