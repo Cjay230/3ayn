@@ -1,0 +1,39 @@
+name: Guardian Consent Backend Build
+
+on:
+  push:
+    branches:
+      - guardian-consent
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+
+      - name: Show versions
+        run: |
+          java -version
+          javac -version
+          mvn -version
+          sam --version
+
+      - name: Validate SAM template
+        working-directory: 3ayn-backend
+        run: sam validate
+
+      - name: Build backend
+        working-directory: 3ayn-backend
+        run: sam build
