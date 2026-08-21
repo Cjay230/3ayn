@@ -7,7 +7,7 @@ Globals:
     Runtime: java21
     MemorySize: 1024
     Timeout: 30
-    CodeUri: ThreeAynFunction
+    CodeUri: bcknd/ThreeAynFunction
     Environment:
       Variables:
         MODEL_ID: global.amazon.nova-2-lite-v1:0
@@ -193,6 +193,18 @@ Resources:
           Properties:
             RestApiId: !Ref ThreeAynApi
             Path: /watch/start
+            Method: post
+        WatchRequest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ThreeAynApi
+            Path: /watch/request
+            Method: post
+        WatchConsent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ThreeAynApi
+            Path: /watch/consent
             Method: post
         WatchFrame:
           Type: Api
