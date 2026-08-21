@@ -22,8 +22,10 @@ import java.util.UUID;
  * feature (Kinesis Video Streams WebRTC) — always available, nothing to fail.
  *
  * POST /watch/start { userId? }        -> { watchId }         wearer opts in
- * POST /watch/frame { watchId, image } -> { ok:true }         wearer uploads a frame
- * GET  /watch/{watchId}                -> { active, image, updatedAt } caregiver polls
+ * POST /watch/frame { watchId, image, lat?, lon?, acc? } -> { ok:true }
+ *      wearer uploads a frame; position rides along in the same request
+ * GET  /watch/{watchId} -> { active, image, updatedAt, lat, lon, acc, locAt }
+ *      caregiver polls frame and position together
  * POST /watch/stop  { watchId }        -> { ok:true }         wearer revokes access
  */
 public class WatchHandler implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
@@ -169,6 +171,9 @@ private APIGatewayProxyResponseEvent consent(APIGatewayProxyRequestEvent event) 
         RequestParser req = new RequestParser(event);
         String watchId = req.requiredField("watchId");
         byte[] image = req.imageBytes();
+        String lat = req.field("lat", "");
+        String lon = req.field("lon", "");
+        String acc = req.field("acc", "");
 
         // only update if the session is still active — revoked sessions ignore uploads
         GetItemResponse existing = DDB.getItem(b -> b.tableName(TABLE)
@@ -188,6 +193,14 @@ if (!"approved".equals(consentStatus)) {
         Map<String, AttributeValue> item = new HashMap<>(existing.item());
         item.put("image", AttributeValue.fromS(java.util.Base64.getEncoder().encodeToString(image)));
         item.put("updatedAt", AttributeValue.fromS(Instant.now().toString()));
+
+        // location is optional - the wearer may have denied the browser permission
+        if (!lat.isBlank() && !lon.isBlank()) {
+            item.put("lat", AttributeValue.fromS(lat));
+            item.put("lon", AttributeValue.fromS(lon));
+            item.put("acc", AttributeValue.fromS(acc.isBlank() ? "0" : acc));
+            item.put("locAt", AttributeValue.fromS(Instant.now().toString()));
+        }
         DDB.putItem(b -> b.tableName(TABLE).item(item));
 
         return ApiResponse.success(Map.of("ok", true));
@@ -241,6 +254,7 @@ if ("approved".equals(consentStatus)) {
 }
 
 return ApiResponse.success(out);
+
     }
 
     private APIGatewayProxyResponseEvent stop(APIGatewayProxyRequestEvent event) {
@@ -255,6 +269,10 @@ return ApiResponse.success(out);
         item.put("active", AttributeValue.fromBool(false));
 item.put("consentStatus", AttributeValue.fromS("stopped"));
         item.remove("image");
+        item.remove("lat");
+        item.remove("lon");
+        item.remove("acc");
+        item.remove("locAt");
         DDB.putItem(b -> b.tableName(TABLE).item(item));
 
         return ApiResponse.success(Map.of("ok", true));

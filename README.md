@@ -106,4 +106,3 @@ Event history per wearer → caregiver dashboard (live log, alerts) · "someone 
 ## Team
 
 Built by **Team 8** — Amazon Industry Program 2026 (IEEE / Women in Engineering, AUB).
-Software & cloud: Carla Jaffal · ML: 3 engineers · Business: 1 analyst.
