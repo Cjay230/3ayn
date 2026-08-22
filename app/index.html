@@ -368,7 +368,7 @@
         <input type="text" id="watchLink" readonly style="margin-top:8px">
         <button class="bigBtn secondary" id="watchCopyBtn">Copy link</button>
       </div>
-      <div class="hint">Off by default. Turning this on shares a still frame from your camera (refreshed every few seconds) with anyone who has the link — not full video, and not enabled unless you turn it on yourself. Turn off any time to revoke access instantly.</div>
+      <div class="hint">Off by default. Turning this on shares a still frame from your camera and your current location with anyone who has the link — refreshed every few seconds, not full video, and never enabled unless you turn it on yourself. Turn off any time to revoke access and erase the last position instantly.</div>
     </div>
 
     <div class="card">
@@ -911,6 +911,41 @@ $("enSendBtn").addEventListener("click", async () => {
 });
 
 /* ---------------- Trusted Viewer (consent-gated snapshot sharing) ---------------- */
+
+/* Live position. Rides along with the frame upload below, so it costs no extra
+   request. Only runs while the wearer has turned sharing on. */
+let lastPos = null, geoWatch = null;
+
+function startGeo(){
+  if (geoWatch !== null || !navigator.geolocation) return;
+  geoWatch = navigator.geolocation.watchPosition(
+    p => { lastPos = {lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy}; },
+    e => { console.warn("location unavailable:", e.message); lastPos = null; },
+    {enableHighAccuracy: true, maximumAge: 5000, timeout: 15000}
+  );
+}
+function stopGeo(){
+  if (geoWatch !== null){ navigator.geolocation.clearWatch(geoWatch); geoWatch = null; }
+  lastPos = null;
+}
+
+/* Browser location stops when the screen sleeps. Hold the screen awake while
+   sharing is on. Best-effort: unsupported browsers simply carry on. */
+let wakeLock = null;
+async function keepAwake(on){
+  try {
+    if (on && ("wakeLock" in navigator)) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+    } else if (!on && wakeLock) {
+      await wakeLock.release(); wakeLock = null;
+    }
+  } catch (e) { console.warn("wake lock unavailable:", e.message); }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && watchActive && !wakeLock) keepAwake(true);
+});
+
 let watchId = storeGet("threeayn_watchId") || null;
 let watchActive = storeGet("threeayn_watchActive") === "1";
 let watchTimer = null;
@@ -955,14 +990,18 @@ function startFrameLoop(){
     try{
       await fetch(base + "/watch/frame", {
         method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({watchId, image: img})
+        body: JSON.stringify(lastPos
+          ? {watchId, image: img,
+             lat: String(lastPos.lat), lon: String(lastPos.lon),
+             acc: String(Math.round(lastPos.acc))}
+          : {watchId, image: img})
       });
     }catch(e){ /* skip this tick */ }
     finally { inFlight = false; }
   }, WATCH_INTERVAL_MS);
 }
 function stopFrameLoop(){ if (watchTimer){ clearInterval(watchTimer); watchTimer = null; } }
-if (watchActive) startFrameLoop();
+if (watchActive){ startFrameLoop(); startGeo(); keepAwake(true); }
 
 $("watchTgl").addEventListener("click", async () => {
   const base = $("endpoint").value.trim();
@@ -978,7 +1017,8 @@ $("watchTgl").addEventListener("click", async () => {
       if (!r.ok || !d.watchId) throw new Error(d.message || "Failed to start");
       watchId = d.watchId; watchActive = true;
       storeSet("threeayn_watchId", watchId); storeSet("threeayn_watchActive", "1");
-      updateWatchUI(); startFrameLoop();
+      updateWatchUI(); startFrameLoop(); startGeo(); keepAwake(true);
+      speakLocal(lang === "ar" ? "تمت مشاركة موقعك" : "Location sharing is on", lang, 5);
     }catch(err){ alert("Failed: " + err.message); }
   } else {
     try{
@@ -990,7 +1030,10 @@ $("watchTgl").addEventListener("click", async () => {
     watchActive = false;
     storeSet("threeayn_watchActive", "0");
     stopFrameLoop();
+    stopGeo();
+    keepAwake(false);
     updateWatchUI();
+    speakLocal(lang === "ar" ? "تم إيقاف المشاركة" : "Sharing is off", lang, 5);
   }
 });
 
